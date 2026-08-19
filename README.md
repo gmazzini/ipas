@@ -12,7 +12,7 @@ The persistent `bgp.raw` file is the source of truth. Patricia tries, HTML views
 ## Versions
 
 - `bgp3.c`: Version 4.03
-- `ipas.c`: Version 4.0
+- `ipas.c`: Version 4.01
 
 The version number of a program is increased only when its source file changes. Documentation, Makefile and other support-file changes do not change program versions.
 
@@ -313,7 +313,9 @@ It reads only a completed RAW snapshot from disk and provides:
 - unique IPv4 address-space calculation per ASN with overlaps removed;
 - IPv6 space expressed as unique `/48` equivalents with overlaps removed;
 - clean IPv4 text export;
-- clean IPv6 text export.
+- clean IPv6 text export;
+- sticky page header/navigation while scrolling;
+- Top 10 AS by announced IPv4 address space and IPv6 `/48` equivalents, computed during the normal summary scan.
 
 It does not connect to RIS Live and does not communicate with the running `bgp3` process.
 

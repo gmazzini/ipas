@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.0
+// Gianluca Mazzini @2015- Version 4.01
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +10,8 @@
 #define DEFAULT_RAW "/home/www/fulltable/bgp.raw"
 #define MAX_QUERY 2048
 #define MAX_MATCH 64
+#define TOPN 10
+#define ASMAP_INIT 16384U
 
 struct v4disk {
   uint32_t ip;
@@ -44,6 +46,17 @@ struct ranges {
   uint32_t cap;
 };
 
+struct top_as {
+  uint32_t asn;
+  uint64_t space;
+};
+
+struct asspace {
+  uint32_t asn;
+  uint64_t v4;
+  uint64_t v6;
+};
+
 struct summary {
   uint32_t n4;
   uint32_t n6;
@@ -54,6 +67,8 @@ struct summary {
   uint32_t oldest6;
   uint32_t newest6;
   uint64_t age[5];
+  struct top_as top4[TOPN];
+  struct top_as top6[TOPN];
   struct stat st;
 };
 
@@ -160,16 +175,16 @@ static void html_head(const char *title){
   printf("Content-Type: text/html; charset=utf-8\r\n\r\n");
   printf("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   printf("<title>%s - IPAS</title><style>",title);
-  printf("body{font-family:system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:24px;background:#f5f6f8;color:#202124}");
-  printf("a{color:#175cd3;text-decoration:none}nav{display:flex;gap:18px;margin:0 0 24px;padding:12px 0;border-bottom:1px solid #ccd0d5}");
-  printf("h1{margin:0 0 8px}h2{margin-top:28px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}");
+  printf("body{font-family:system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:0 24px 24px;background:#f5f6f8;color:#202124}");
+  printf("a{color:#175cd3;text-decoration:none}.top{position:sticky;top:0;z-index:20;background:#f5f6f8;padding-top:18px;border-bottom:1px solid #ccd0d5}");
+  printf("nav{display:flex;gap:18px;padding:12px 0}.top h1{margin:0 0 4px}h2{margin-top:28px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}");
   printf(".card{background:white;border:1px solid #dfe2e6;border-radius:10px;padding:16px}.big{font-size:1.8rem;font-weight:700}");
   printf("table{width:100%%;border-collapse:collapse;background:white}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}");
   printf(".barrow{display:grid;grid-template-columns:56px 1fr 100px;gap:8px;align-items:center;margin:5px 0}.bar{height:14px;background:#dbe7ff;border-radius:3px;overflow:hidden}.fill{height:100%%;background:#4f7fdc}");
   printf("form{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}input{padding:8px;border:1px solid #b8bdc5;border-radius:6px;min-width:220px}button{padding:8px 14px;border:0;border-radius:6px;background:#175cd3;color:white}");
   printf(".muted{color:#667085}.error{background:#fff1f0;border:1px solid #f1b7b2;padding:12px;border-radius:8px}</style></head><body>");
-  printf("<h1>IPAS</h1><div class=\"muted\">IP prefix and autonomous system archive</div>");
-  printf("<nav><a href=\"?\">Summary</a><a href=\"?action=export4\">IPv4 export</a><a href=\"?action=export6\">IPv6 export</a></nav>");
+  printf("<header class=\"top\"><h1>IPAS</h1><div class=\"muted\">IP prefix and autonomous system archive</div>");
+  printf("<nav><a href=\"?\">Summary</a><a href=\"?action=export4\">IPv4 export</a><a href=\"?action=export6\">IPv6 export</a></nav></header>");
 }
 
 static void html_foot(void){
@@ -180,6 +195,83 @@ static void html_error(const char *msg){
   html_head("Error");
   printf("<div class=\"error\">%s</div>",msg);
   html_foot();
+}
+
+static uint32_t as_hash(uint32_t x){
+  x^=x>>16;
+  x*=0x7feb352dU;
+  x^=x>>15;
+  x*=0x846ca68bU;
+  x^=x>>16;
+  return x;
+}
+
+static int asmap_grow(struct asspace **map,uint32_t *cap){
+  struct asspace *old,*nmap;
+  uint32_t oldcap,ncap,i,pos;
+
+  old=*map;
+  oldcap=*cap;
+  ncap=oldcap?oldcap<<1:ASMAP_INIT;
+  if(ncap<oldcap)return 0;
+  nmap=(struct asspace *)calloc(ncap,sizeof(*nmap));
+  if(nmap==NULL)return 0;
+  if(old){
+    for(i=0;i<oldcap;i++)if(old[i].asn){
+      pos=as_hash(old[i].asn)&(ncap-1);
+      while(nmap[pos].asn)pos=(pos+1)&(ncap-1);
+      nmap[pos]=old[i];
+    }
+    free(old);
+  }
+  *map=nmap;
+  *cap=ncap;
+  return 1;
+}
+
+static int asmap_add(struct asspace **map,uint32_t *cap,uint32_t *used,uint32_t asn,uint64_t v4,uint64_t v6){
+  uint32_t pos;
+
+  if(asn==0)return 1;
+  if(*cap==0||(*used+1)*10>=*cap*7)if(!asmap_grow(map,cap))return 0;
+  pos=as_hash(asn)&(*cap-1);
+  while((*map)[pos].asn&&(*map)[pos].asn!=asn)pos=(pos+1)&(*cap-1);
+  if((*map)[pos].asn==0){
+    (*map)[pos].asn=asn;
+    (*used)++;
+  }
+  (*map)[pos].v4+=v4;
+  (*map)[pos].v6+=v6;
+  return 1;
+}
+
+static void top_add(struct top_as *top,uint32_t asn,uint64_t space){
+  int i,j;
+
+  if(asn==0||space==0)return;
+  for(i=0;i<TOPN;i++)if(space>top[i].space||(space==top[i].space&&(top[i].asn==0||asn<top[i].asn))){
+    for(j=TOPN-1;j>i;j--)top[j]=top[j-1];
+    top[i].asn=asn;
+    top[i].space=space;
+    return;
+  }
+}
+
+static void format_u64(uint64_t v,char *buf,size_t len){
+  char raw[32],out[48];
+  size_t n,i,j,first;
+
+  snprintf(raw,sizeof(raw),"%llu",(unsigned long long)v);
+  n=strlen(raw);
+  first=n%3;
+  if(first==0)first=3;
+  j=0;
+  for(i=0;i<n&&j+1<sizeof(out);i++){
+    if(i&&((i-first)%3)==0&&j+1<sizeof(out))out[j++]=',';
+    out[j++]=raw[i];
+  }
+  out[j]='\0';
+  snprintf(buf,len,"%s",out);
 }
 
 static void age_add(struct summary *s,uint32_t ts,uint32_t now){
@@ -197,26 +289,44 @@ static int scan_summary(struct summary *s){
   FILE *f;
   struct v4disk d4;
   struct v6disk d6;
-  uint32_t i,now;
+  struct asspace *map;
+  uint32_t i,now,cap,used;
+  uint64_t space;
 
   memset(s,0,sizeof(*s));
+  map=NULL;
+  cap=0;
+  used=0;
   if(!open_raw(&f,&s->n4,&s->n6,&s->st))return 0;
   now=(uint32_t)time(NULL);
   for(i=0;i<s->n4;i++){
-    if(fread(&d4,sizeof(d4),1,f)!=1){fclose(f); return 0;}
-    if(d4.cidr<=32)s->c4[d4.cidr]++;
+    if(fread(&d4,sizeof(d4),1,f)!=1){fclose(f); free(map); return 0;}
+    if(d4.cidr>=8&&d4.cidr<=24){
+      s->c4[d4.cidr]++;
+      space=1ULL<<(32-d4.cidr);
+      if(!asmap_add(&map,&cap,&used,d4.asn,space,0)){fclose(f); free(map); return 0;}
+    }
     if(s->oldest4==0||d4.ts<s->oldest4)s->oldest4=d4.ts;
     if(d4.ts>s->newest4)s->newest4=d4.ts;
     age_add(s,d4.ts,now);
   }
   for(i=0;i<s->n6;i++){
-    if(fread(&d6,sizeof(d6),1,f)!=1){fclose(f); return 0;}
-    if(d6.cidr<=64)s->c6[d6.cidr]++;
+    if(fread(&d6,sizeof(d6),1,f)!=1){fclose(f); free(map); return 0;}
+    if(d6.cidr>=16&&d6.cidr<=48){
+      s->c6[d6.cidr]++;
+      space=1ULL<<(48-d6.cidr);
+      if(!asmap_add(&map,&cap,&used,d6.asn,0,space)){fclose(f); free(map); return 0;}
+    }
     if(s->oldest6==0||d6.ts<s->oldest6)s->oldest6=d6.ts;
     if(d6.ts>s->newest6)s->newest6=d6.ts;
     age_add(s,d6.ts,now);
   }
   fclose(f);
+  for(i=0;i<cap;i++)if(map[i].asn){
+    top_add(s->top4,map[i].asn,map[i].v4);
+    top_add(s->top6,map[i].asn,map[i].v6);
+  }
+  free(map);
   return 1;
 }
 
@@ -231,6 +341,18 @@ static void cidr_bars(uint32_t *c,int first,int last){
     if(width==0)width=1;
     printf("<div class=\"barrow\"><div>/%d</div><div class=\"bar\"><div class=\"fill\" style=\"width:%u%%\"></div></div><div>%u</div></div>",i,width,c[i]);
   }
+}
+
+static void top_table(const char *title,struct top_as *top,const char *unit){
+  char nbuf[48];
+  int i;
+
+  printf("<div class=\"card\"><h3>%s</h3><table><tr><th>AS</th><th>%s</th></tr>",title,unit);
+  for(i=0;i<TOPN&&top[i].asn;i++){
+    format_u64(top[i].space,nbuf,sizeof(nbuf));
+    printf("<tr><td><a href=\"?action=asn&amp;asn=%u\">AS%u</a></td><td>%s</td></tr>",top[i].asn,top[i].asn,nbuf);
+  }
+  printf("</table></div>");
 }
 
 static void summary_page(void){
@@ -256,6 +378,10 @@ static void summary_page(void){
   printf("<div class=\"card\"><form method=\"get\"><input type=\"hidden\" name=\"action\" value=\"asn\"><input name=\"asn\" placeholder=\"ASN, e.g. 13335\"><button>Analyze ASN</button></form></div></div>");
   printf("<h2>IPv4 CIDR distribution</h2><div class=\"card\">"); cidr_bars(s.c4,8,24); printf("<div class=\"muted\">Oldest update %s &middot; newest %s</div></div>",o4,n4);
   printf("<h2>IPv6 CIDR distribution</h2><div class=\"card\">"); cidr_bars(s.c6,16,48); printf("<div class=\"muted\">Oldest update %s &middot; newest %s</div></div>",o6,n6);
+  printf("<h2>Top 10 AS by announced space</h2><div class=\"grid\">");
+  top_table("IPv4",s.top4,"Addresses");
+  top_table("IPv6",s.top6,"/48 equivalents");
+  printf("</div><p class=\"muted\">Fast ranking from the same RAW scan used by the summary. Overlapping more-specific prefixes are included here; the individual ASN analysis removes overlaps.</p>");
   printf("<h2>Route freshness</h2><div class=\"card\"><table><tr><th>Age</th><th>Prefixes</th></tr>");
   printf("<tr><td>&lt; 1 hour</td><td>%llu</td></tr><tr><td>1-24 hours</td><td>%llu</td></tr><tr><td>1-7 days</td><td>%llu</td></tr><tr><td>7-30 days</td><td>%llu</td></tr><tr><td>&gt; 30 days</td><td>%llu</td></tr>",
     (unsigned long long)s.age[0],(unsigned long long)s.age[1],(unsigned long long)s.age[2],(unsigned long long)s.age[3],(unsigned long long)s.age[4]);
