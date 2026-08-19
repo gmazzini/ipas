@@ -12,7 +12,7 @@ The persistent `bgp.raw` file is the source of truth. Patricia tries, HTML views
 ## Versions
 
 - `bgp3.c`: Version 4.03
-- `ipas.c`: Version 4.01
+- `ipas.c`: Version 4.02
 
 The version number of a program is increased only when its source file changes. Documentation, Makefile and other support-file changes do not change program versions.
 

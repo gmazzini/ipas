@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.01
+// Gianluca Mazzini @2015- Version 4.02
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -259,15 +259,13 @@ static void top_add(struct top_as *top,uint32_t asn,uint64_t space){
 
 static void format_u64(uint64_t v,char *buf,size_t len){
   char raw[32],out[48];
-  size_t n,i,j,first;
+  size_t n,i,j;
 
   snprintf(raw,sizeof(raw),"%llu",(unsigned long long)v);
   n=strlen(raw);
-  first=n%3;
-  if(first==0)first=3;
   j=0;
   for(i=0;i<n&&j+1<sizeof(out);i++){
-    if(i&&((i-first)%3)==0&&j+1<sizeof(out))out[j++]=',';
+    if(i>0&&((n-i)%3)==0&&j+1<sizeof(out))out[j++]=',';
     out[j++]=raw[i];
   }
   out[j]='\0';
