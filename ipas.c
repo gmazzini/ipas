@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.02
+// Gianluca Mazzini @2015- Version 4.03
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -329,6 +329,7 @@ static int scan_summary(struct summary *s){
 }
 
 static void cidr_bars(uint32_t *c,int first,int last){
+  char nbuf[48];
   uint32_t max,width;
   int i;
 
@@ -337,7 +338,8 @@ static void cidr_bars(uint32_t *c,int first,int last){
   for(i=first;i<=last;i++)if(c[i]){
     width=(uint32_t)(((uint64_t)c[i]*100)/max);
     if(width==0)width=1;
-    printf("<div class=\"barrow\"><div>/%d</div><div class=\"bar\"><div class=\"fill\" style=\"width:%u%%\"></div></div><div>%u</div></div>",i,width,c[i]);
+    format_u64(c[i],nbuf,sizeof(nbuf));
+    printf("<div class=\"barrow\"><div>/%d</div><div class=\"bar\"><div class=\"fill\" style=\"width:%u%%\"></div></div><div>%s</div></div>",i,width,nbuf);
   }
 }
 
@@ -355,7 +357,8 @@ static void top_table(const char *title,struct top_as *top,const char *unit){
 
 static void summary_page(void){
   struct summary s;
-  char mt[32],o4[32],n4[32],o6[32],n6[32];
+  char mt[32],o4[32],n4[32],o6[32],n6[32],v4buf[48],v6buf[48];
+  char agebuf[5][48];
   struct tm *tmv;
   time_t mtm;
 
@@ -367,9 +370,16 @@ static void summary_page(void){
   format_time(s.newest4,n4,sizeof(n4));
   format_time(s.oldest6,o6,sizeof(o6));
   format_time(s.newest6,n6,sizeof(n6));
+  format_u64(s.n4,v4buf,sizeof(v4buf));
+  format_u64(s.n6,v6buf,sizeof(v6buf));
+  format_u64(s.age[0],agebuf[0],sizeof(agebuf[0]));
+  format_u64(s.age[1],agebuf[1],sizeof(agebuf[1]));
+  format_u64(s.age[2],agebuf[2],sizeof(agebuf[2]));
+  format_u64(s.age[3],agebuf[3],sizeof(agebuf[3]));
+  format_u64(s.age[4],agebuf[4],sizeof(agebuf[4]));
   html_head("Summary");
-  printf("<div class=\"grid\"><div class=\"card\"><div class=\"muted\">IPv4 prefixes</div><div class=\"big\">%u</div></div>",s.n4);
-  printf("<div class=\"card\"><div class=\"muted\">IPv6 prefixes</div><div class=\"big\">%u</div></div>",s.n6);
+  printf("<div class=\"grid\"><div class=\"card\"><div class=\"muted\">IPv4 prefixes</div><div class=\"big\">%s</div></div>",v4buf);
+  printf("<div class=\"card\"><div class=\"muted\">IPv6 prefixes</div><div class=\"big\">%s</div></div>",v6buf);
   printf("<div class=\"card\"><div class=\"muted\">RAW size</div><div class=\"big\">%.1f MiB</div></div>",(double)s.st.st_size/(1024.0*1024.0));
   printf("<div class=\"card\"><div class=\"muted\">Snapshot</div><div>%s</div><div class=\"muted\">%s</div></div></div>",mt,rawfile);
   printf("<h2>Lookup</h2><div class=\"grid\"><div class=\"card\"><form method=\"get\"><input type=\"hidden\" name=\"action\" value=\"query\"><input name=\"ip\" placeholder=\"IPv4 or IPv6 address\"><button>Search IP</button></form></div>");
@@ -381,8 +391,8 @@ static void summary_page(void){
   top_table("IPv6",s.top6,"/48 equivalents");
   printf("</div><p class=\"muted\">Fast ranking from the same RAW scan used by the summary. Overlapping more-specific prefixes are included here; the individual ASN analysis removes overlaps.</p>");
   printf("<h2>Route freshness</h2><div class=\"card\"><table><tr><th>Age</th><th>Prefixes</th></tr>");
-  printf("<tr><td>&lt; 1 hour</td><td>%llu</td></tr><tr><td>1-24 hours</td><td>%llu</td></tr><tr><td>1-7 days</td><td>%llu</td></tr><tr><td>7-30 days</td><td>%llu</td></tr><tr><td>&gt; 30 days</td><td>%llu</td></tr>",
-    (unsigned long long)s.age[0],(unsigned long long)s.age[1],(unsigned long long)s.age[2],(unsigned long long)s.age[3],(unsigned long long)s.age[4]);
+  printf("<tr><td>&lt; 1 hour</td><td>%s</td></tr><tr><td>1-24 hours</td><td>%s</td></tr><tr><td>1-7 days</td><td>%s</td></tr><tr><td>7-30 days</td><td>%s</td></tr><tr><td>&gt; 30 days</td><td>%s</td></tr>",
+    agebuf[0],agebuf[1],agebuf[2],agebuf[3],agebuf[4]);
   printf("</table></div>");
   html_foot();
 }
@@ -544,7 +554,7 @@ static void asn_page(const char *text){
   uint32_t n4,n6,i,asn,c4[33],c6[65],oldest,newest,count4,count6;
   uint64_t space4,space6;
   unsigned long v;
-  char *end,t1[32],t2[32];
+  char *end,t1[32],t2[32],count4buf[48],count6buf[48],space4buf[48],space6buf[48];
 
   v=strtoul(text,&end,10);
   if(*text=='\0'||*end!='\0'||v==0||v>0xffffffffUL){html_error("Invalid ASN."); return;}
@@ -580,11 +590,15 @@ static void asn_page(const char *text){
   free(r6.v);
   format_time(oldest,t1,sizeof(t1));
   format_time(newest,t2,sizeof(t2));
+  format_u64(count4,count4buf,sizeof(count4buf));
+  format_u64(count6,count6buf,sizeof(count6buf));
+  format_u64(space4,space4buf,sizeof(space4buf));
+  format_u64(space6,space6buf,sizeof(space6buf));
   html_head("ASN analysis");
-  printf("<h2>AS%u</h2><div class=\"grid\"><div class=\"card\"><div class=\"muted\">IPv4 prefixes</div><div class=\"big\">%u</div></div>",asn,count4);
-  printf("<div class=\"card\"><div class=\"muted\">Unique IPv4 addresses</div><div class=\"big\">%llu</div></div>",(unsigned long long)space4);
-  printf("<div class=\"card\"><div class=\"muted\">IPv6 prefixes</div><div class=\"big\">%u</div></div>",count6);
-  printf("<div class=\"card\"><div class=\"muted\">Unique IPv6 /48 equivalents</div><div class=\"big\">%llu</div></div></div>",(unsigned long long)space6);
+  printf("<h2>AS%u</h2><div class=\"grid\"><div class=\"card\"><div class=\"muted\">IPv4 prefixes</div><div class=\"big\">%s</div></div>",asn,count4buf);
+  printf("<div class=\"card\"><div class=\"muted\">Unique IPv4 addresses</div><div class=\"big\">%s</div></div>",space4buf);
+  printf("<div class=\"card\"><div class=\"muted\">IPv6 prefixes</div><div class=\"big\">%s</div></div>",count6buf);
+  printf("<div class=\"card\"><div class=\"muted\">Unique IPv6 /48 equivalents</div><div class=\"big\">%s</div></div></div>",space6buf);
   if(count4){printf("<h2>IPv4 CIDR distribution</h2><div class=\"card\">"); cidr_bars(c4,8,24); printf("</div>");}
   if(count6){printf("<h2>IPv6 CIDR distribution</h2><div class=\"card\">"); cidr_bars(c6,16,48); printf("</div>");}
   printf("<p class=\"muted\">Unique space removes overlap between prefixes announced by the same ASN. Update range: %s to %s.</p>",t1,t2);
