@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.03
+// Gianluca Mazzini @2015- Version 4.05
 #include <libwebsockets.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -78,6 +78,7 @@ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int server_fd=-1;
 static volatile sig_atomic_t interrupted=0;
 static volatile sig_atomic_t save_requested=0;
+static volatile sig_atomic_t reconnect_requested=0;
 static uint32_t follow=0,rxv4=0,rxv6=0,newv4=0,newv6=0;
 static uint32_t tstart,trx,tnew,tsave=0,restart=0,query=0;
 static uint32_t nsave=0,save_error=0;
@@ -777,11 +778,11 @@ static int callback_ris(struct lws *wsi,enum lws_callback_reasons reason,void *u
       break;
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
       fprintf(stderr,"No Connection\n");
-      interrupted=1;
+      reconnect_requested=1;
       break;
     case LWS_CALLBACK_CLOSED:
       fprintf(stderr,"Closed Connection\n");
-      interrupted=1;
+      reconnect_requested=1;
       break;
     case LWS_CALLBACK_CLIENT_RECEIVE_PONG:
       pthread_mutex_lock(&lock);
@@ -908,12 +909,17 @@ int main(int argc,char **argv){
   }
 
 reconnect:
+  reconnect_requested=0;
   memset(&info,0,sizeof(info));
   info.port=CONTEXT_PORT_NO_LISTEN;
   info.protocols=protocols;
   info.options=LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
   context=lws_create_context(&info);
-  if(context==NULL){interrupted=1; goto done;}
+  if(context==NULL){
+    restart++;
+    sleep(2);
+    goto reconnect;
+  }
   memset(&ccinfo,0,sizeof(ccinfo));
   ccinfo.context=context;
   ccinfo.address="ris-live.ripe.net";
@@ -923,21 +929,19 @@ reconnect:
   ccinfo.origin=ccinfo.address;
   ccinfo.protocol=protocols[0].name;
   ccinfo.ssl_connection=LCCSCF_USE_SSL;
-  lws_client_connect_via_info(&ccinfo);
+  if(lws_client_connect_via_info(&ccinfo)==NULL)reconnect_requested=1;
   trx=(uint32_t)time(NULL);
-  while(!interrupted){
+  while(!interrupted&&!reconnect_requested){
     lws_service(context,100);
-    if((uint32_t)time(NULL)-trx>TIMEOUT_RX){
-      restart++;
-      lws_context_destroy(context);
-      context=NULL;
-      sleep(2);
-      goto reconnect;
-    }
+    if((uint32_t)time(NULL)-trx>TIMEOUT_RX)reconnect_requested=1;
   }
   lws_context_destroy(context);
+  if(!interrupted){
+    restart++;
+    sleep(2);
+    goto reconnect;
+  }
 
-done:
   save_requested=1;
   interrupted=1;
   pthread_join(whois_thread,NULL);
