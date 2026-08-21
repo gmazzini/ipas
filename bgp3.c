@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.05
+// Gianluca Mazzini @2015- Version 4.06
 #include <libwebsockets.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -12,7 +12,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TIMEOUT_RX 20
 #define AUTOSAVE 900
 #define LBUF 100000
 #define V4_BASE 8
@@ -716,7 +715,6 @@ static int load_db(void){
 
 static int callback_ris(struct lws *wsi,enum lws_callback_reasons reason,void *user,void *in,size_t len){
   unsigned char aux[LWS_PRE+512];
-  unsigned char dummy_ping[LWS_PRE];
   uint32_t j,asn,ts;
   size_t msg_len;
   char *ptr,*buf1,*buf2,*buf3;
@@ -725,7 +723,6 @@ static int callback_ris(struct lws *wsi,enum lws_callback_reasons reason,void *u
   switch(reason){
     case LWS_CALLBACK_CLIENT_ESTABLISHED:
       lws_callback_on_writable(wsi);
-      lws_set_timer_usecs(wsi,10*LWS_USEC_PER_SEC);
       break;
     case LWS_CALLBACK_CLIENT_WRITEABLE:
       msg_len=strlen(subscribe_message);
@@ -783,15 +780,6 @@ static int callback_ris(struct lws *wsi,enum lws_callback_reasons reason,void *u
     case LWS_CALLBACK_CLOSED:
       fprintf(stderr,"Closed Connection\n");
       reconnect_requested=1;
-      break;
-    case LWS_CALLBACK_CLIENT_RECEIVE_PONG:
-      pthread_mutex_lock(&lock);
-      trx=(uint32_t)time(NULL);
-      pthread_mutex_unlock(&lock);
-      break;
-    case LWS_CALLBACK_TIMER:
-      lws_write(wsi,dummy_ping+LWS_PRE,0,LWS_WRITE_PING);
-      lws_set_timer_usecs(wsi,10*LWS_USEC_PER_SEC);
       break;
     default:
       break;
@@ -930,11 +918,7 @@ reconnect:
   ccinfo.protocol=protocols[0].name;
   ccinfo.ssl_connection=LCCSCF_USE_SSL;
   if(lws_client_connect_via_info(&ccinfo)==NULL)reconnect_requested=1;
-  trx=(uint32_t)time(NULL);
-  while(!interrupted&&!reconnect_requested){
-    lws_service(context,100);
-    if((uint32_t)time(NULL)-trx>TIMEOUT_RX)reconnect_requested=1;
-  }
+  while(!interrupted&&!reconnect_requested)lws_service(context,100);
   lws_context_destroy(context);
   if(!interrupted){
     restart++;

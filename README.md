@@ -11,7 +11,7 @@ The persistent `bgp.raw` file is the source of truth. Patricia tries, HTML views
 
 ## Versions
 
-- `bgp3.c`: Version 4.05
+- `bgp3.c`: Version 4.06
 - `ipas.c`: Version 4.03
 
 The version number of a program is increased only when its source file changes. Documentation, Makefile and other support-file changes do not change program versions.
@@ -90,7 +90,7 @@ It:
 4. receives BGP prefix updates;
 5. updates the in-memory database;
 6. serves live IP lookups on TCP port 43;
-7. reconnects automatically after RIS websocket errors, closures or receive timeouts;
+7. reconnects automatically after RIS websocket errors or closures;
 8. periodically checkpoints the current database back to the RAW file.
 
 IPv4 prefixes are currently accepted from `/8` through `/24`.
@@ -186,7 +186,7 @@ trie used    memory occupied by currently used Patricia nodes
 trie capacity allocated Patricia storage including growth reserve
 ```
 
-`Trx` intentionally remains the second output line because the historical watchdog uses that position to detect stale RIS activity.
+`Trx` intentionally remains the second output line because the external watchdog uses that position to detect stale RIS activity. `bgp3` has no internal receive timeout: stale-data policy is intentionally kept outside the daemon.
 
 There is no collision counter in `bgp3`: Patricia tries do not use hashing and therefore hash collisions do not exist.
 
@@ -240,7 +240,9 @@ A watchdog can continue to use:
 whois -h 127.0.0.1 stats
 ```
 
-and inspect the second line (`Trx`).
+and inspect the second line (`Trx`). `Trx` is initialized at process start and thereafter updated only by actual RIS websocket messages; reconnects and internal keepalive traffic do not refresh it.
+
+There is deliberately no receive-stall timeout inside `bgp3`; the watchdog decides externally how old `Trx` may become before the process is considered unhealthy. This keeps the policy configurable without recompiling the daemon.
 
 The historical behaviour of requesting a checkpoint before killing an unhealthy process remains available:
 
