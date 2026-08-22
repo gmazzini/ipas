@@ -1,5 +1,5 @@
-// Gianluca Mazzini @2015- Version 4.07
-#include <libwebsockets.h>
+// Gianluca Mazzini @2015- Version 4.08
+#include <curl/curl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -77,15 +77,14 @@ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int server_fd=-1;
 static volatile sig_atomic_t interrupted=0;
 static volatile sig_atomic_t save_requested=0;
-static volatile sig_atomic_t reconnect_requested=0;
 static uint32_t follow=0,rxv4=0,rxv6=0,newv4=0,newv6=0;
 static uint32_t tstart,trx,tnew,tsave=0,restart=0,query=0;
 static uint32_t nsave=0,save_error=0;
 static uint32_t nnode4=0,nnode6=0,cap4=0,cap6=0,nroute4=0,nroute6=0;
 static const char *bgpfile;
 static char *bgptmp;
-static char *subscribe_message="{\"type\": \"ris_subscribe\", \"data\": {\"type\": \"UPDATE\", \"host\": \"rrc00\"}}";
 static char *lbuf;
+static int drop_line=0;
 
 static int hexval(unsigned char c){
   if(c>='0'&&c<='9')return c-'0';
@@ -713,84 +712,118 @@ static int load_db(void){
   return 1;
 }
 
-static int callback_ris(struct lws *wsi,enum lws_callback_reasons reason,void *user,void *in,size_t len){
-  unsigned char aux[LWS_PRE+512];
+static void process_ris_line(char *ptr,size_t len){
   uint32_t j,asn,ts;
-  size_t msg_len;
-  char *ptr,*buf1,*buf2,*buf3;
+  char *buf1,*buf2,*buf3;
 
-  (void)user;
-  switch(reason){
-    case LWS_CALLBACK_CLIENT_ESTABLISHED:
-      lws_callback_on_writable(wsi);
+  if(len==0)return;
+  ptr[len]='\0';
+  ts=(uint32_t)time(NULL);
+  pthread_mutex_lock(&lock);
+  trx=ts;
+  pthread_mutex_unlock(&lock);
+  buf1=strstr(ptr,"\"path\":["); if(buf1==NULL)return;
+  buf1+=8;
+  buf2=strstr(buf1,"]"); if(buf2==NULL)return;
+  *buf2='\0';
+  for(;;){
+    buf3=strstr(buf1,",");
+    if(buf3!=NULL)buf1=buf3+1;
+    else {
+      asn=0;
+      for(j=0;j<(uint32_t)(buf2-buf1);j++)if(buf1[j]>='0'&&buf1[j]<='9')asn=asn*10+(buf1[j]-'0');
       break;
-    case LWS_CALLBACK_CLIENT_WRITEABLE:
-      msg_len=strlen(subscribe_message);
-      memcpy(&aux[LWS_PRE],subscribe_message,msg_len);
-      lws_write(wsi,&aux[LWS_PRE],msg_len,LWS_WRITE_TEXT);
-      break;
-    case LWS_CALLBACK_CLIENT_RECEIVE:
-      ts=(uint32_t)time(NULL);
-      pthread_mutex_lock(&lock);
-      trx=ts;
-      pthread_mutex_unlock(&lock);
-      if(follow+len>=LBUF-1){follow=0; break;}
-      memcpy(lbuf+follow,in,len);
-      follow+=(uint32_t)len;
-      if(!lws_is_final_fragment(wsi))break;
-      lbuf[follow]='\0';
-      ptr=lbuf;
-      len=follow;
-      follow=0;
-      buf1=strstr(ptr,"\"path\":["); if(buf1==NULL)break;
-      buf1+=8;
-      buf2=strstr(buf1,"]"); if(buf2==NULL)break;
-      *buf2='\0';
-      for(;;){
-        buf3=strstr(buf1,",");
-        if(buf3!=NULL)buf1=buf3+1;
-        else {
-          asn=0;
-          for(j=0;j<(uint32_t)(buf2-buf1);j++)if(buf1[j]>='0'&&buf1[j]<='9')asn=asn*10+(buf1[j]-'0');
-          break;
-        }
-      }
-      buf1=strstr(buf2+1,"\"prefixes\":["); if(buf1==NULL)break;
-      buf1+=12;
-      buf2=strstr(buf1,"]"); if(buf2==NULL)break;
-      *buf2='\0';
-      pthread_mutex_lock(&lock);
-      for(;;){
-        buf3=strstr(buf1,",");
-        if(buf3!=NULL){
-          myproc(buf1+1,(int)(buf3-buf1-2),asn,ts);
-          buf1=buf3+1;
-        }
-        else {
-          myproc(buf1+1,(int)(buf2-buf1-2),asn,ts);
-          break;
-        }
-      }
-      pthread_mutex_unlock(&lock);
-      break;
-    case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-      fprintf(stderr,"No Connection\n");
-      reconnect_requested=1;
-      break;
-    case LWS_CALLBACK_CLOSED:
-      fprintf(stderr,"Closed Connection\n");
-      reconnect_requested=1;
-      break;
-    default:
-      break;
+    }
   }
-  return 0;
+  buf1=strstr(buf2+1,"\"prefixes\":["); if(buf1==NULL)return;
+  buf1+=12;
+  buf2=strstr(buf1,"]"); if(buf2==NULL)return;
+  *buf2='\0';
+  pthread_mutex_lock(&lock);
+  for(;;){
+    buf3=strstr(buf1,",");
+    if(buf3!=NULL){
+      myproc(buf1+1,(int)(buf3-buf1-2),asn,ts);
+      buf1=buf3+1;
+    }
+    else {
+      myproc(buf1+1,(int)(buf2-buf1-2),asn,ts);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&lock);
 }
 
-static struct lws_protocols protocols[]={
-  {.name="ris-protocol",.callback=callback_ris,.per_session_data_size=0,.rx_buffer_size=131072},
-  {.name=NULL}
-};
+static size_t ris_write(char *ptr,size_t size,size_t nmemb,void *userdata){
+  char *nl;
+  size_t total,pos,take;
+
+  (void)userdata;
+  total=size*nmemb;
+  if(interrupted)return 0;
+  pos=0;
+  while(pos<total){
+    nl=(char *)memchr(ptr+pos,'\n',total-pos);
+    take=nl?(size_t)(nl-(ptr+pos)):total-pos;
+    if(drop_line){
+      pos+=take;
+      if(nl){drop_line=0; pos++;}
+      continue;
+    }
+    if((size_t)follow+take>=LBUF-1){
+      follow=0;
+      drop_line=1;
+      pos+=take;
+      if(nl){drop_line=0; pos++;}
+      continue;
+    }
+    if(take){memcpy(lbuf+follow,ptr+pos,take); follow+=(uint32_t)take;}
+    pos+=take;
+    if(nl){
+      if(follow&&lbuf[follow-1]=='\r')follow--;
+      process_ris_line(lbuf,follow);
+      follow=0;
+      pos++;
+    }
+  }
+  return total;
+}
+
+static int ris_progress(void *userdata,curl_off_t dltotal,curl_off_t dlnow,curl_off_t ultotal,curl_off_t ulnow){
+  (void)userdata;
+  (void)dltotal;
+  (void)dlnow;
+  (void)ultotal;
+  (void)ulnow;
+  return interrupted?1:0;
+}
+
+static CURLcode run_stream(void){
+  CURL *curl;
+  CURLcode rc;
+  struct curl_slist *headers;
+
+  curl=curl_easy_init();
+  if(curl==NULL)return CURLE_FAILED_INIT;
+  headers=NULL;
+  headers=curl_slist_append(headers,"X-RIS-Subscribe: {\"host\":\"rrc00\",\"type\":\"UPDATE\"}");
+  if(headers==NULL){curl_easy_cleanup(curl); return CURLE_OUT_OF_MEMORY;}
+  follow=0;
+  drop_line=0;
+  curl_easy_setopt(curl,CURLOPT_URL,"https://ris-live.ripe.net/v1/stream/?format=json&client=ipas");
+  curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
+  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,ris_write);
+  curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
+  curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,1L);
+  curl_easy_setopt(curl,CURLOPT_TCP_KEEPALIVE,1L);
+  curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);
+  curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,ris_progress);
+  curl_easy_setopt(curl,CURLOPT_USERAGENT,"ipas-bgp3/4.08");
+  rc=curl_easy_perform(curl);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  return rc;
+}
 
 static void sig_handler(int sig){
   if(sig==36)save_requested=1;
@@ -863,9 +896,7 @@ static void *whois_server_thread(void *arg){
 }
 
 int main(int argc,char **argv){
-  struct lws_context_creation_info info;
-  struct lws_client_connect_info ccinfo;
-  struct lws_context *context;
+  CURLcode rc;
   pthread_t whois_thread,saver_thread;
   uint32_t now;
 
@@ -887,6 +918,7 @@ int main(int argc,char **argv){
     fprintf(stderr,"Cannot load %s\n",bgpfile);
     return 1;
   }
+  if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK)return 1;
   signal(36,sig_handler);
   signal(37,sig_handler);
   if(pthread_create(&saver_thread,NULL,save_thread,NULL)!=0)return 1;
@@ -896,41 +928,19 @@ int main(int argc,char **argv){
     return 1;
   }
 
-reconnect:
-  reconnect_requested=0;
-  memset(&info,0,sizeof(info));
-  info.port=CONTEXT_PORT_NO_LISTEN;
-  info.protocols=protocols;
-  info.options=LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-  context=lws_create_context(&info);
-  if(context==NULL){
+  while(!interrupted){
+    rc=run_stream();
+    if(interrupted)break;
     restart++;
+    fprintf(stderr,"RIS stream disconnected: %s\n",curl_easy_strerror(rc));
     sleep(2);
-    goto reconnect;
-  }
-  memset(&ccinfo,0,sizeof(ccinfo));
-  ccinfo.context=context;
-  ccinfo.address="ris-live.ripe.net";
-  ccinfo.port=443;
-  ccinfo.path="/v1/ws/";
-  ccinfo.host=ccinfo.address;
-  ccinfo.origin=ccinfo.address;
-  ccinfo.protocol=NULL;
-  ccinfo.local_protocol_name=protocols[0].name;
-  ccinfo.ssl_connection=LCCSCF_USE_SSL;
-  if(lws_client_connect_via_info(&ccinfo)==NULL)reconnect_requested=1;
-  while(!interrupted&&!reconnect_requested)lws_service(context,100);
-  lws_context_destroy(context);
-  if(!interrupted){
-    restart++;
-    sleep(2);
-    goto reconnect;
   }
 
   save_requested=1;
   interrupted=1;
   pthread_join(whois_thread,NULL);
   pthread_join(saver_thread,NULL);
+  curl_global_cleanup();
   free(node4);
   free(node6);
   free(bgptmp);

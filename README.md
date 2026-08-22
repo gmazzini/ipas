@@ -11,7 +11,7 @@ The persistent `bgp.raw` file is the source of truth. Patricia tries, HTML views
 
 ## Versions
 
-- `bgp3.c`: Version 4.07
+- `bgp3.c`: Version 4.08
 - `ipas.c`: Version 4.03
 
 The version number of a program is increased only when its source file changes. Documentation, Makefile and other support-file changes do not change program versions.
@@ -44,10 +44,10 @@ Only `bgp3` is a daemon. `ipas.cgi` starts for one HTTP request, reads the RAW f
 Debian/Trixie example:
 
 ```sh
-apt install build-essential libwebsockets-dev whois
+apt install build-essential libcurl4-openssl-dev whois
 ```
 
-`bgp3` links against libwebsockets and pthreads. `ipas.cgi` only uses the standard C/POSIX networking and file APIs.
+`bgp3` links against libcurl and pthreads. `ipas.cgi` only uses the standard C/POSIX networking and file APIs.
 
 ## Build
 
@@ -86,12 +86,11 @@ It:
 
 1. loads an existing RAW snapshot if one exists;
 2. rebuilds collision-free IPv4 and IPv6 Patricia tries in memory;
-3. connects to `ris-live.ripe.net`;
+3. connects to the RIPE RIS Live HTTPS stream at `ris-live.ripe.net`;
 4. receives BGP prefix updates;
 5. updates the in-memory database;
 6. serves live IP lookups on TCP port 43;
-7. reconnects automatically after RIS websocket errors or closures;
-   the local libwebsockets protocol is not advertised as a remote WebSocket subprotocol;
+7. reconnects automatically if the RIS HTTPS stream closes or returns an error;
 8. periodically checkpoints the current database back to the RAW file.
 
 IPv4 prefixes are currently accepted from `/8` through `/24`.
@@ -171,7 +170,7 @@ Important fields include:
 Tstart       process start time
 Trx          time of the most recent RIS receive activity
 Tnew         time the most recent new prefix was inserted
-Nrestart     websocket reconnect count
+Nrestart     RIS HTTPS stream reconnect count
 Tsave        time of the most recent successful RAW checkpoint
 Nsave        successful checkpoint count since process start
 Nsave_error  failed checkpoint count
@@ -241,7 +240,7 @@ A watchdog can continue to use:
 whois -h 127.0.0.1 stats
 ```
 
-and inspect the second line (`Trx`). `Trx` is initialized at process start and thereafter updated only by actual RIS websocket messages; reconnects and internal keepalive traffic do not refresh it.
+and inspect the second line (`Trx`). `Trx` is initialized at process start and thereafter updated only by actual RIS stream messages; reconnects and internal keepalive traffic do not refresh it.
 
 There is deliberately no receive-stall timeout inside `bgp3`; the watchdog decides externally how old `Trx` may become before the process is considered unhealthy. This keeps the policy configurable without recompiling the daemon.
 
