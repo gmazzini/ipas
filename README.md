@@ -11,7 +11,7 @@ The persistent `bgp.raw` file is the source of truth. Patricia tries, HTML views
 
 ## Versions
 
-- `bgp3.c`: Version 4.06
+- `bgp3.c`: Version 4.07
 - `ipas.c`: Version 4.03
 
 The version number of a program is increased only when its source file changes. Documentation, Makefile and other support-file changes do not change program versions.
@@ -91,6 +91,7 @@ It:
 5. updates the in-memory database;
 6. serves live IP lookups on TCP port 43;
 7. reconnects automatically after RIS websocket errors or closures;
+   the local libwebsockets protocol is not advertised as a remote WebSocket subprotocol;
 8. periodically checkpoints the current database back to the RAW file.
 
 IPv4 prefixes are currently accepted from `/8` through `/24`.

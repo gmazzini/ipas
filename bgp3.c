@@ -1,4 +1,4 @@
-// Gianluca Mazzini @2015- Version 4.06
+// Gianluca Mazzini @2015- Version 4.07
 #include <libwebsockets.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -915,7 +915,8 @@ reconnect:
   ccinfo.path="/v1/ws/";
   ccinfo.host=ccinfo.address;
   ccinfo.origin=ccinfo.address;
-  ccinfo.protocol=protocols[0].name;
+  ccinfo.protocol=NULL;
+  ccinfo.local_protocol_name=protocols[0].name;
   ccinfo.ssl_connection=LCCSCF_USE_SSL;
   if(lws_client_connect_via_info(&ccinfo)==NULL)reconnect_requested=1;
   while(!interrupted&&!reconnect_requested)lws_service(context,100);
